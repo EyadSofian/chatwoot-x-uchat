@@ -3,9 +3,11 @@
 Run with:  uvicorn app.main:app --host 0.0.0.0 --port $PORT
 """
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import HTMLResponse
 
 from . import db
 from .ingest import parse_file
+from .ui import UPLOAD_PAGE
 
 app = FastAPI(title="UChat → Chatwoot Relay")
 
@@ -16,7 +18,13 @@ def _startup():
     db.init_schema()
 
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
+def home():
+    """Browser upload UI — drag & drop files, no command line needed."""
+    return UPLOAD_PAGE
+
+
+@app.get("/health")
 def health():
     return {"ok": True, "service": "uchat-chatwoot-relay"}
 

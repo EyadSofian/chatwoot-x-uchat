@@ -33,13 +33,19 @@
 
 > ملاحظة: السيرفسين الاتنين لازم ياخدوا نفس الـ `DATABASE_URL` وبيانات UChat/Chatwoot.
 
-## الاستخدام
+## الاستخدام (من المتصفح — من غير cmd)
 
+افتح لينك سيرفس الـ **web** في المتصفح:
+```
+https://YOUR-WEB-URL.up.railway.app/
+```
+هتلاقي صفحة رفع: **اسحب كل الملفات بالماوس مرة واحدة → دوس "ابدأ الرفع"**.
+الصفحة بترفع كل ملف ورا التاني وبتوريك جدول بالنتايج (جديد / مكرر / اتفلتر)،
+وفيه قسم "حالة الترحيل" بيتحدّث lحظيًا.
+
+### بديل (اختياري) للـ CLI:
 ```bash
-# ارفع ملف (كرر ده للـ 30 ملف)
-curl -F "file=@users_1.xlsx" https://YOUR-WEB-URL.up.railway.app/upload
-
-# شوف التقدم
+curl -F "file=@users.csv" https://YOUR-WEB-URL.up.railway.app/upload
 curl https://YOUR-WEB-URL.up.railway.app/status
 ```
 
@@ -48,6 +54,8 @@ curl https://YOUR-WEB-URL.up.railway.app/status
 { "job_id": 1, "rows_in_file": 980, "queued_new": 950,
   "duplicates_ignored": 30, "filtered_out_by_date": 0 }
 ```
+
+> فحص صحة السيرفس: `GET /health`
 
 ## فلترة بالتاريخ (اختياري)
 

@@ -1,0 +1,72 @@
+# UChat → Chatwoot Relay
+
+سيرفر بيستقبل ملفات CSV/XLSX فيها subscribers، وبيهاجر محادثاتهم من UChat لـ Chatwoot
+كـ private notes — **بيشتغل 24/7 على Railway من غير ما جهازك يفضل شغال**.
+
+## المعمار
+
+```
+[ انت ترفع CSV/XLSX ]
+          │  POST /upload
+          ▼
+   web  (FastAPI)  ──►  Postgres (queue + progress)  ◄──  worker (loop)
+          │                                                    │
+   GET /status                                          migrate_user()
+                                                       UChat ──► Chatwoot
+```
+
+- **Dedup بالـ phone** على مستوى Postgres → ارفع الـ 30 ملف كلهم، المكرر بيتشال لوحده.
+- **Resume-safe**: الـ progress في Postgres، مش في ملف. أي redeploy على Railway مايأثرش.
+- **worker آمن للتكرار**: `FOR UPDATE SKIP LOCKED` → تقدر تشغّل أكتر من replica.
+
+## Deploy على Railway
+
+1. ارفع المشروع على GitHub repo (private).
+2. في Railway: **New Project → Deploy from GitHub repo**.
+3. ضيف **Postgres** (Add → Database → PostgreSQL). Railway هيحقن `DATABASE_URL` تلقائيًا.
+4. اعمل **سيرفسين** من نفس الـ repo:
+   - **web** → Start Command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+   - **worker** → Start Command: `python -m app.worker`
+5. في كل سيرفس، ضيف الـ env variables (من `.env.example`):
+   `UCHAT_API_TOKEN`, `CHATWOOT_BASE_URL`, `CHATWOOT_API_TOKEN`, `ACCOUNT_ID`, `INBOX_ID`
+   (وكمان `DATABASE_URL` لو مش متشاركة تلقائيًا — اربطها بالـ Postgres reference variable).
+
+> ملاحظة: السيرفسين الاتنين لازم ياخدوا نفس الـ `DATABASE_URL` وبيانات UChat/Chatwoot.
+
+## الاستخدام
+
+```bash
+# ارفع ملف (كرر ده للـ 30 ملف)
+curl -F "file=@users_1.xlsx" https://YOUR-WEB-URL.up.railway.app/upload
+
+# شوف التقدم
+curl https://YOUR-WEB-URL.up.railway.app/status
+```
+
+رد الـ `/upload`:
+```json
+{ "job_id": 1, "rows_in_file": 980, "queued_new": 950,
+  "duplicates_ignored": 30, "filtered_out_by_date": 0 }
+```
+
+## فلترة بالتاريخ (اختياري)
+
+عايز تنقل اللي اتكلموا مؤخرًا بس؟ حط في الـ env بتاع **web**:
+```
+MIGRATE_SINCE=2025-11-01
+```
+أي contact آخر تفاعل ليه قبل التاريخ ده بياخد status=`skipped` ومابيتنقلش.
+
+## التحكم في السرعة (من env، من غير ما تلمس الكود)
+
+| Variable | Default | الوظيفة |
+|---|---|---|
+| `RATE_MSG_DELAY` | 0.5 | تأخير بين كل رسالة |
+| `RATE_USER_DELAY` | 2 | تأخير بين كل عميل |
+| `DOWN_BACKOFF` | 30 | لو Chatwoot وقع، يستنى ويرجّع العميل للـ queue |
+| `BREAK_EVERY` / `BREAK_SECONDS` | 500 / 60 | استراحة دورية لحماية الـ APIs |
+
+## ملاحظة أمان
+
+التوكنات **env-only** — مفيش أي توكن hardcoded في الكود. لو كنت كاشف توكنات قديمة
+في الريبو القديم، اعملهم rotate (واتعملت already حسب كلامك).

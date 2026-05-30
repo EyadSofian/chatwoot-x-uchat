@@ -1,0 +1,24 @@
+# Secrets — NEVER commit real tokens
+.env
+.env.local
+*.env
+!.env.example
+
+# Customer data / PII — never push subscriber exports
+*.csv
+*.xlsx
+*.xls
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Tooling / editor
+.claude/
+.idea/
+.vscode/
+.DS_Store

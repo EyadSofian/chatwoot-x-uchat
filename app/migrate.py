@@ -69,6 +69,10 @@ def _load_agent_map() -> dict[str, int]:
 _STATIC_AGENT_MAP = _load_agent_map()
 
 
+class UChatFetchError(RuntimeError):
+    """UChat returned an API error, not a genuinely empty conversation."""
+
+
 def fetch_uchat_messages(phone: str, user_ns: str, retries: int = 3) -> list:
     url = "https://www.uchat.com.au/api/subscriber/chat-messages"
     headers = {"Authorization": f"Bearer {UCHAT_API_TOKEN}", "Accept": "application/json"}
@@ -84,6 +88,7 @@ def fetch_uchat_messages(phone: str, user_ns: str, retries: int = 3) -> list:
     lookup_params.append({"user_id": phone.replace("+", "")})
 
     last_error = None
+    saw_empty_ok = False
     for lookup in lookup_params:
         params = {**base_params, **lookup}
         for _ in range(retries):
@@ -96,9 +101,10 @@ def fetch_uchat_messages(phone: str, user_ns: str, retries: int = 3) -> list:
                     if data:
                         return data
                     last_error = f"empty via {lookup}"
+                    saw_empty_ok = True
                     break
                 last_error = f"http_{r.status_code}: {r.text[:180]}"
-                if r.status_code in (400, 404):
+                if r.status_code in (400, 401, 403, 404):
                     break
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
                 last_error = f"network: {e}"
@@ -108,6 +114,8 @@ def fetch_uchat_messages(phone: str, user_ns: str, retries: int = 3) -> list:
                 break
     if last_error:
         print(f"UChat returned no messages for {phone}: {last_error}", flush=True)
+    if last_error and not last_error.startswith("empty via") and not saw_empty_ok:
+        raise UChatFetchError(last_error)
     return []
 
 

@@ -11,7 +11,7 @@ import os
 import time
 
 from . import db
-from .migrate import migrate_user
+from .migrate import UChatFetchError, migrate_user
 
 RATE_USER_DELAY = float(os.environ.get("RATE_USER_DELAY", "2"))      # between users
 IDLE_POLL_DELAY = float(os.environ.get("IDLE_POLL_DELAY", "15"))     # when queue empty
@@ -41,6 +41,11 @@ def run():
                 contact.get("assignment_salesperson"),
                 contact.get("assignment_assignee_id"),
             )
+        except UChatFetchError as e:
+            db.finish_contact(cid, "failed", 0, error=f"uchat_api_error: {e}")
+            print(f"🛑 {phone} UChat API error, stopped: {e}", flush=True)
+            time.sleep(DOWN_BACKOFF)
+            continue
         except Exception as e:
             db.requeue_contact(cid, error=f"unexpected: {e}")
             print(f"⚠️  {phone} unexpected error, requeued: {e}", flush=True)

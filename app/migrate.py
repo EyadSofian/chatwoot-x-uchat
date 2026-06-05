@@ -24,6 +24,7 @@ UCHAT_INCLUDE_BOT = int(os.environ.get("UCHAT_INCLUDE_BOT", "1"))
 UCHAT_INCLUDE_NOTE = int(os.environ.get("UCHAT_INCLUDE_NOTE", "1"))
 UCHAT_INCLUDE_SYSTEM = int(os.environ.get("UCHAT_INCLUDE_SYSTEM", "0"))
 UCHAT_MSG_LIMIT = int(os.environ.get("UCHAT_MSG_LIMIT", "100"))
+UCHAT_TOKEN_MAP_RAW = os.environ.get("UCHAT_TOKEN_MAP", "").strip()
 
 _CW_HEADERS = {"api_access_token": CHATWOOT_API_TOKEN, "Content-Type": "application/json"}
 _AGENTS_CACHE: list[dict] | None = None
@@ -69,13 +70,42 @@ def _load_agent_map() -> dict[str, int]:
 _STATIC_AGENT_MAP = _load_agent_map()
 
 
+def _load_uchat_token_map() -> dict[str, str]:
+    """Optional override per UChat flow: UCHAT_TOKEN_MAP='{"f198645":"token"}'."""
+    if not UCHAT_TOKEN_MAP_RAW:
+        return {}
+    try:
+        parsed = json.loads(UCHAT_TOKEN_MAP_RAW)
+    except json.JSONDecodeError:
+        parsed = {}
+        for part in UCHAT_TOKEN_MAP_RAW.split(","):
+            if "=" not in part:
+                continue
+            flow_ns, token = part.split("=", 1)
+            parsed[flow_ns.strip()] = token.strip()
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(flow_ns).strip(): str(token).strip() for flow_ns, token in parsed.items() if token}
+
+
+_UCHAT_TOKEN_MAP = _load_uchat_token_map()
+
+
 class UChatFetchError(RuntimeError):
     """UChat returned an API error, not a genuinely empty conversation."""
 
 
+def _uchat_token_for(user_ns: str | None) -> tuple[str, str | None]:
+    flow_ns = user_ns.split("u", 1)[0] if user_ns and "u" in user_ns else None
+    if flow_ns and flow_ns in _UCHAT_TOKEN_MAP:
+        return _UCHAT_TOKEN_MAP[flow_ns], flow_ns
+    return UCHAT_API_TOKEN, flow_ns
+
+
 def fetch_uchat_messages(phone: str, user_ns: str, retries: int = 3) -> list:
     url = "https://www.uchat.com.au/api/subscriber/chat-messages"
-    headers = {"Authorization": f"Bearer {UCHAT_API_TOKEN}", "Accept": "application/json"}
+    token, flow_ns = _uchat_token_for(user_ns)
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     base_params = {
         "include_bot": UCHAT_INCLUDE_BOT,
         "include_note": UCHAT_INCLUDE_NOTE,
@@ -113,7 +143,8 @@ def fetch_uchat_messages(phone: str, user_ns: str, retries: int = 3) -> list:
                 last_error = f"unexpected: {e}"
                 break
     if last_error:
-        print(f"UChat returned no messages for {phone}: {last_error}", flush=True)
+        flow_note = f" flow={flow_ns}" if flow_ns else ""
+        print(f"UChat returned no messages for {phone}{flow_note}: {last_error}", flush=True)
     if last_error and not last_error.startswith("empty via") and not saw_empty_ok:
         raise UChatFetchError(last_error)
     return []

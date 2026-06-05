@@ -98,6 +98,12 @@ MIGRATE_SINCE=2025-11-01
 | `UCHAT_INCLUDE_NOTE` | 1 | يجيب notes من UChat لو موجودة |
 | `UCHAT_INCLUDE_SYSTEM` | 0 | يجيب system messages من UChat لو محتاجها |
 | `UCHAT_MSG_LIMIT` | 100 | أقصى عدد رسائل يرجعها UChat لكل عميل |
+| `UCHAT_TOKEN_MAP` | empty | mapping اختياري لو CSVs جاية من أكتر من UChat flow |
+
+> ملاحظة: `user_ns` بيبدأ بـ flow prefix مثل `f198645u596597209`.
+> لو UChat بيرجع `Flow not found`، يبقى الـ token مش بتاع نفس الـ flow prefix.
+> في الحالة دي استخدم token بتاع الـ flow الصحيح أو حط:
+> `UCHAT_TOKEN_MAP={"f198645":"FLOW_TOKEN"}`
 
 ## لو عملت تشغيل قبل تفعيل رسائل UChat
 

@@ -4,6 +4,8 @@ Refactored from the original main.py. Tokens are ENV-ONLY (no hardcoded
 defaults) so nothing sensitive ever lands in the repo.
 """
 import os
+import json
+import re
 import time
 from datetime import datetime
 
@@ -17,8 +19,50 @@ INBOX_ID = int(os.environ["INBOX_ID"])
 
 # Pacing (seconds) — tune from env without redeploying code.
 RATE_MSG_DELAY = float(os.environ.get("RATE_MSG_DELAY", "0.5"))
+CHATWOOT_AGENT_MAP_RAW = os.environ.get("CHATWOOT_AGENT_MAP", "").strip()
 
 _CW_HEADERS = {"api_access_token": CHATWOOT_API_TOKEN, "Content-Type": "application/json"}
+_AGENTS_CACHE: list[dict] | None = None
+
+
+def _norm_name(value: str | None) -> str:
+    if not value:
+        return ""
+    return re.sub(r"\s+", " ", re.sub(r"[^\w@.+-]+", " ", str(value).lower())).strip()
+
+
+def _compact_name(value: str | None) -> str:
+    return _norm_name(value).replace(" ", "").replace("-", "")
+
+
+def _load_agent_map() -> dict[str, int]:
+    """Optional override: CHATWOOT_AGENT_MAP='{"Salesperson Name": 12}'."""
+    if not CHATWOOT_AGENT_MAP_RAW:
+        return {}
+    try:
+        parsed = json.loads(CHATWOOT_AGENT_MAP_RAW)
+    except json.JSONDecodeError:
+        parsed = {}
+        for part in CHATWOOT_AGENT_MAP_RAW.split(","):
+            if "=" not in part:
+                continue
+            name, agent_id = part.split("=", 1)
+            try:
+                parsed[name.strip()] = int(agent_id.strip())
+            except ValueError:
+                continue
+    if not isinstance(parsed, dict):
+        parsed = {}
+    agent_map: dict[str, int] = {}
+    for name, agent_id in parsed.items():
+        try:
+            agent_map[_norm_name(name)] = int(agent_id)
+        except (TypeError, ValueError):
+            continue
+    return agent_map
+
+
+_STATIC_AGENT_MAP = _load_agent_map()
 
 
 def fetch_uchat_messages(phone: str, user_ns: str, retries: int = 3) -> list:
@@ -34,6 +78,54 @@ def fetch_uchat_messages(phone: str, user_ns: str, retries: int = 3) -> list:
         except Exception:
             return []
     return []
+
+
+def fetch_chatwoot_agents(retries: int = 3) -> list[dict]:
+    global _AGENTS_CACHE
+    if _AGENTS_CACHE is not None:
+        return _AGENTS_CACHE
+    for _ in range(retries):
+        try:
+            r = requests.get(
+                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{ACCOUNT_ID}/agents",
+                headers=_CW_HEADERS,
+                timeout=30,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, dict):
+                    data = data.get("payload") or data.get("data") or []
+                _AGENTS_CACHE = data if isinstance(data, list) else []
+                return _AGENTS_CACHE
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            time.sleep(3)
+        except Exception:
+            break
+    _AGENTS_CACHE = []
+    return _AGENTS_CACHE
+
+
+def resolve_assignee_id(salesperson: str | None, explicit_assignee_id: int | None = None) -> int | None:
+    if explicit_assignee_id:
+        return int(explicit_assignee_id)
+    if not salesperson:
+        return None
+
+    normalized = _norm_name(salesperson)
+    compact = _compact_name(salesperson)
+    if normalized in _STATIC_AGENT_MAP:
+        return _STATIC_AGENT_MAP[normalized]
+
+    for agent in fetch_chatwoot_agents():
+        candidates = [
+            agent.get("name"),
+            agent.get("available_name"),
+            agent.get("email"),
+        ]
+        for candidate in candidates:
+            if _norm_name(candidate) == normalized or _compact_name(candidate) == compact:
+                return int(agent["id"])
+    return None
 
 
 def get_or_create_contact(phone: str, name: str, retries: int = 3) -> int | None:
@@ -81,13 +173,35 @@ def create_conversation(contact_id: int, retries: int = 3) -> int | None:
     return None
 
 
+def set_conversation_assignee(conv_id: int, assignee_id: int | None, retries: int = 3) -> bool:
+    assignment_url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{ACCOUNT_ID}/conversations/{conv_id}/assignments"
+    payload = {"assignee_id": assignee_id}
+    for _ in range(retries):
+        try:
+            r = requests.post(assignment_url, headers=_CW_HEADERS, json=payload, timeout=30)
+            if r.status_code in (200, 204):
+                return True
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            time.sleep(3)
+        except Exception:
+            return False
+    if assignee_id is None:
+        try:
+            patch_url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{ACCOUNT_ID}/conversations/{conv_id}"
+            r = requests.patch(patch_url, headers=_CW_HEADERS, json=payload, timeout=30)
+            return r.status_code in (200, 204)
+        except Exception:
+            return False
+    return False
+
+
 def send_note(conv_id: int, content: str, retries: int = 3) -> bool:
     url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{ACCOUNT_ID}/conversations/{conv_id}/messages"
     payload = {"content": content, "message_type": "outgoing", "private": True}
     for _ in range(retries):
         try:
-            requests.post(url, headers=_CW_HEADERS, json=payload, timeout=30)
-            return True
+            r = requests.post(url, headers=_CW_HEADERS, json=payload, timeout=30)
+            return r.status_code in (200, 201)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             time.sleep(3)
         except Exception:
@@ -95,25 +209,48 @@ def send_note(conv_id: int, content: str, retries: int = 3) -> bool:
     return False
 
 
-def migrate_user(phone: str, user_ns: str, name: str) -> tuple[str, int]:
-    """Returns (status, messages_count).
+def apply_assignment_policy(
+    conv_id: int,
+    salesperson: str | None = None,
+    assignee_id: int | None = None,
+) -> str | None:
+    """Assign matched contacts; otherwise keep imported conversations unassigned."""
+    resolved_assignee_id = resolve_assignee_id(salesperson, assignee_id)
+    if resolved_assignee_id:
+        ok = set_conversation_assignee(conv_id, resolved_assignee_id)
+        return None if ok else f"assignment_failed:{salesperson or resolved_assignee_id}"
+
+    ok = set_conversation_assignee(conv_id, None)
+    if salesperson:
+        return f"agent_not_found:{salesperson}" if ok else f"unassign_failed_agent_not_found:{salesperson}"
+    return None if ok else "unassign_failed"
+
+
+def migrate_user(
+    phone: str,
+    user_ns: str,
+    name: str,
+    assignment_salesperson: str | None = None,
+    assignment_assignee_id: int | None = None,
+) -> tuple[str, int, str | None]:
+    """Returns (status, messages_count, assignment_error).
 
     status: 'done' | 'empty' | 'failed'
       - 'failed' means Chatwoot was unreachable -> caller should requeue & wait.
     """
     messages = fetch_uchat_messages(phone, user_ns)
     if not messages:
-        return "empty", 0
+        return "empty", 0, None
 
     messages.reverse()  # oldest first
 
     contact_id = get_or_create_contact(phone, name)
     if not contact_id:
-        return "failed", 0
+        return "failed", 0, None
 
     conv_id = create_conversation(contact_id)
     if not conv_id:
-        return "failed", 0
+        return "failed", 0, None
 
     count = 0
     for msg in messages:
@@ -128,4 +265,9 @@ def migrate_user(phone: str, user_ns: str, name: str) -> tuple[str, int]:
             count += 1
         time.sleep(RATE_MSG_DELAY)
 
-    return "done", count
+    assignment_error = apply_assignment_policy(
+        conv_id,
+        salesperson=assignment_salesperson,
+        assignee_id=assignment_assignee_id,
+    )
+    return "done", count, assignment_error

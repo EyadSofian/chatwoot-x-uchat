@@ -84,3 +84,70 @@ def parse_file(filename: str, content: bytes) -> list[dict]:
         })
 
     return rows
+
+
+def parse_assignment_file(filename: str, content: bytes) -> list[dict]:
+    """Parse phone -> salesperson assignment sheets.
+
+    Expected columns are tolerant, but the common shape is:
+    Contact Name | Phone | Salesperson
+
+    If a sheet includes assignee_id / agent_id / chatwoot_agent_id, that ID wins
+    over name matching in the Chatwoot worker.
+    """
+    ext = filename.lower().rsplit(".", 1)[-1]
+    buf = io.BytesIO(content)
+    if ext in ("xlsx", "xls"):
+        df = pd.read_excel(buf, dtype=str)
+    else:
+        df = pd.read_csv(buf, dtype=str, encoding="utf-8-sig")
+
+    df.columns = [str(c).strip() for c in df.columns]
+    lc = {c.lower(): c for c in df.columns}
+
+    phone_col = _pick(lc, "phone", "phone_number", "msisdn", "mobile", "facebook phone number")
+    if not phone_col:
+        raise ValueError("No phone column found in assignment file.")
+
+    salesperson_col = _pick(
+        lc,
+        "salesperson",
+        "sales person",
+        "sales_person",
+        "agent",
+        "assignee",
+        "assigned_to",
+        "owner",
+    )
+    fallback_salesperson = filename.rsplit(".", 1)[0].replace(" Daata", "").replace(" Dataa", "").strip()
+    if not salesperson_col and not fallback_salesperson:
+        raise ValueError("No Salesperson/agent column found in assignment file.")
+
+    assignee_col = _pick(lc, "assignee_id", "agent_id", "chatwoot_agent_id", "chatwoot_user_id")
+
+    by_phone: dict[str, dict] = {}
+    for _, rec in df.iterrows():
+        phone = _norm_phone(rec.get(phone_col))
+        if not phone:
+            continue
+
+        salesperson = (rec.get(salesperson_col) if salesperson_col else fallback_salesperson) or ""
+        salesperson = str(salesperson).strip()
+        if not salesperson:
+            continue
+
+        assignee_id = None
+        if assignee_col and rec.get(assignee_col):
+            try:
+                assignee_id = int(float(str(rec.get(assignee_col)).strip()))
+            except (TypeError, ValueError):
+                assignee_id = None
+
+        by_phone[phone] = {
+            "phone": phone,
+            "salesperson": salesperson,
+            "assignee_id": assignee_id,
+            "source_file": filename,
+        }
+
+    return list(by_phone.values())

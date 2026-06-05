@@ -60,6 +60,18 @@ CREATE TABLE IF NOT EXISTS contacts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_contacts_status ON contacts(status);
+
+CREATE TABLE IF NOT EXISTS assignment_rules (
+    id           SERIAL PRIMARY KEY,
+    phone        TEXT UNIQUE,
+    salesperson  TEXT NOT NULL,
+    assignee_id  INT,
+    source_file  TEXT,
+    created_at   TIMESTAMPTZ DEFAULT now(),
+    updated_at   TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignment_rules_salesperson ON assignment_rules(salesperson);
 """
 
 
@@ -95,20 +107,49 @@ def bulk_insert_contacts(job_id: int, rows: list[dict]) -> tuple[int, int]:
     return inserted, len(rows) - inserted
 
 
+def bulk_upsert_assignments(rows: list[dict]) -> int:
+    """Store phone -> salesperson rules. Later uploads overwrite earlier ones."""
+    if not rows:
+        return 0
+    with get_conn() as conn, conn.cursor() as cur:
+        for r in rows:
+            cur.execute(
+                """
+                INSERT INTO assignment_rules (phone, salesperson, assignee_id, source_file)
+                VALUES (%(phone)s, %(salesperson)s, %(assignee_id)s, %(source_file)s)
+                ON CONFLICT (phone) DO UPDATE SET
+                    salesperson=EXCLUDED.salesperson,
+                    assignee_id=EXCLUDED.assignee_id,
+                    source_file=EXCLUDED.source_file,
+                    updated_at=now()
+                """,
+                r,
+            )
+    return len(rows)
+
+
 def claim_next_contact() -> dict | None:
     """Atomically grab the next pending contact (safe for multiple workers)."""
     with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
-            UPDATE contacts SET status='processing'
-            WHERE id = (
+            WITH picked AS (
                 SELECT id FROM contacts
                 WHERE status='pending'
                 ORDER BY id
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, user_ns, phone, name
+            UPDATE contacts SET status='processing'
+            FROM picked
+            WHERE contacts.id = picked.id
+            RETURNING
+                contacts.id,
+                contacts.user_ns,
+                contacts.phone,
+                contacts.name,
+                (SELECT salesperson FROM assignment_rules WHERE phone=contacts.phone) AS assignment_salesperson,
+                (SELECT assignee_id FROM assignment_rules WHERE phone=contacts.phone) AS assignment_assignee_id
             """
         )
         return cur.fetchone()
@@ -138,4 +179,23 @@ def stats() -> dict:
         by_status = {row[0]: row[1] for row in cur.fetchall()}
         cur.execute("SELECT COALESCE(SUM(messages_count),0) FROM contacts WHERE status='done'")
         total_msgs = cur.fetchone()[0]
-    return {"by_status": by_status, "messages_injected": total_msgs}
+        cur.execute("SELECT COUNT(*) FROM assignment_rules")
+        assignment_total = cur.fetchone()[0]
+        cur.execute(
+            """
+            SELECT salesperson, COUNT(*)
+            FROM assignment_rules
+            GROUP BY salesperson
+            ORDER BY COUNT(*) DESC, salesperson
+            LIMIT 20
+            """
+        )
+        assignment_by_salesperson = {row[0]: row[1] for row in cur.fetchall()}
+    return {
+        "by_status": by_status,
+        "messages_injected": total_msgs,
+        "assignment_rules": {
+            "total": assignment_total,
+            "by_salesperson": assignment_by_salesperson,
+        },
+    }

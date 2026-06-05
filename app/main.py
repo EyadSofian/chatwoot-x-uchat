@@ -6,7 +6,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse
 
 from . import db
-from .ingest import parse_file
+from .ingest import parse_assignment_file, parse_file
 from .ui import UPLOAD_PAGE
 
 app = FastAPI(title="UChat → Chatwoot Relay")
@@ -51,6 +51,33 @@ async def upload(file: UploadFile = File(...)):
         "queued_new": inserted,
         "duplicates_ignored": dup,
         "filtered_out_by_date": skipped,
+    }
+
+
+@app.post("/upload-assignments")
+async def upload_assignments(file: UploadFile = File(...)):
+    if not file.filename.lower().endswith((".csv", ".xlsx", ".xls")):
+        raise HTTPException(400, "Upload a .csv or .xlsx assignment file")
+    content = await file.read()
+    try:
+        rows = parse_assignment_file(file.filename, content)
+    except Exception as e:
+        raise HTTPException(400, f"Parse error: {e}")
+    if not rows:
+        raise HTTPException(400, "No valid assignment rows (need phone + Salesperson).")
+
+    upserted = db.bulk_upsert_assignments(rows)
+    by_salesperson: dict[str, int] = {}
+    direct_ids = 0
+    for row in rows:
+        by_salesperson[row["salesperson"]] = by_salesperson.get(row["salesperson"], 0) + 1
+        direct_ids += 1 if row.get("assignee_id") else 0
+    return {
+        "file": file.filename,
+        "rows_in_file": len(rows),
+        "assignment_rules_upserted": upserted,
+        "direct_assignee_ids": direct_ids,
+        "by_salesperson": by_salesperson,
     }
 
 

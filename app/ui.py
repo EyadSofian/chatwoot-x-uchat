@@ -80,6 +80,25 @@ UPLOAD_PAGE = """<!doctype html>
   </div>
 
   <div class="card">
+    <h2>توزيع الأرقام على الموظفين</h2>
+    <label class="drop" id="assignDrop">
+      <div class="big">📌</div>
+      <div class="t">ارفع شيتات التوزيع الأول</div>
+      <div class="s">الأعمدة المتوقعة: Phone + Salesperson • ويمكن إضافة chatwoot_agent_id اختياريًا</div>
+      <input type="file" id="assignPicker" multiple accept=".csv,.xlsx,.xls">
+    </label>
+
+    <div class="files" id="assignFiles"></div>
+
+    <div class="btns">
+      <button class="primary" id="assignGo" disabled>رفع شيتات التوزيع</button>
+      <button class="ghost" id="assignClear">مسح القائمة</button>
+    </div>
+    <div id="assignResults"></div>
+    <div class="muted">لو الرقم موجود في شيت توزيع، المحادثة هتتعمل assign للموظف. لو مش موجودة، هتفضل unassigned.</div>
+  </div>
+
+  <div class="card">
     <label class="drop" id="drop">
       <div class="big">📤</div>
       <div class="t">اسحب الملفات هنا أو دوس للاختيار</div>
@@ -111,8 +130,11 @@ UPLOAD_PAGE = """<!doctype html>
         filesBox=document.getElementById('files'), go=document.getElementById('go'),
         clearBtn=document.getElementById('clear'), bar=document.getElementById('bar'),
         barFill=bar.querySelector('i'), results=document.getElementById('results'),
-        statBadges=document.getElementById('statBadges'), refresh=document.getElementById('refresh');
-  let queue=[];
+        statBadges=document.getElementById('statBadges'), refresh=document.getElementById('refresh'),
+        assignPicker=document.getElementById('assignPicker'), assignDrop=document.getElementById('assignDrop'),
+        assignFilesBox=document.getElementById('assignFiles'), assignGo=document.getElementById('assignGo'),
+        assignClear=document.getElementById('assignClear'), assignResults=document.getElementById('assignResults');
+  let queue=[], assignQueue=[];
 
   const fmt=n=> n<1024?n+' B': n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB';
 
@@ -129,11 +151,60 @@ UPLOAD_PAGE = """<!doctype html>
     render();
   }
 
+  function renderAssign(){
+    assignFilesBox.innerHTML = assignQueue.map(f=>
+      `<div class="frow"><span class="nm">📄 ${f.name}</span><span class="sz">${fmt(f.size)}</span></div>`).join('');
+    assignGo.disabled = assignQueue.length===0;
+    assignGo.textContent = assignQueue.length ? `رفع شيتات التوزيع (${assignQueue.length})` : 'رفع شيتات التوزيع';
+  }
+  function addAssignFiles(list){
+    for(const f of list){
+      if(/\\.(csv|xlsx|xls)$/i.test(f.name) && !assignQueue.some(q=>q.name===f.name && q.size===f.size)) assignQueue.push(f);
+    }
+    renderAssign();
+  }
+
   picker.addEventListener('change', e=> addFiles(e.target.files));
   clearBtn.addEventListener('click', ()=>{ queue=[]; results.innerHTML=''; render(); });
   ;['dragover','dragenter'].forEach(ev=> drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
   ;['dragleave','drop'].forEach(ev=> drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
   drop.addEventListener('drop', e=> addFiles(e.dataTransfer.files));
+
+  assignPicker.addEventListener('change', e=> addAssignFiles(e.target.files));
+  assignClear.addEventListener('click', ()=>{ assignQueue=[]; assignResults.innerHTML=''; renderAssign(); });
+  ;['dragover','dragenter'].forEach(ev=> assignDrop.addEventListener(ev,e=>{e.preventDefault();assignDrop.classList.add('over');}));
+  ;['dragleave','drop'].forEach(ev=> assignDrop.addEventListener(ev,e=>{e.preventDefault();assignDrop.classList.remove('over');}));
+  assignDrop.addEventListener('drop', e=> addAssignFiles(e.dataTransfer.files));
+
+  assignGo.addEventListener('click', async ()=>{
+    assignGo.disabled=true; assignClear.disabled=true;
+    let tot={ok:0,fail:0,rows:0};
+    assignResults.innerHTML='<table><thead><tr><th>الملف</th><th>أرقام</th><th>موظفين</th><th>الحالة</th></tr></thead><tbody id="assignTb"></tbody></table>';
+    const tb=document.getElementById('assignTb');
+    for(let i=0;i<assignQueue.length;i++){
+      const f=assignQueue[i];
+      tb.insertAdjacentHTML('beforeend',
+        `<tr id="a${i}"><td class="file" title="${f.name}">${f.name}</td><td>—</td><td>—</td><td><span class="pill run">جارٍ…</span></td></tr>`);
+      try{
+        const fd=new FormData(); fd.append('file', f);
+        const res=await fetch('/upload-assignments',{method:'POST',body:fd});
+        const j=await res.json();
+        if(!res.ok) throw new Error(j.detail||('HTTP '+res.status));
+        const people=Object.keys(j.by_salesperson||{}).join('، ') || '—';
+        tot.ok++; tot.rows+=j.assignment_rules_upserted||0;
+        document.getElementById('a'+i).innerHTML=
+          `<td class="file" title="${f.name}">${f.name}</td><td>${j.assignment_rules_upserted}</td><td title="${people}">${people}</td><td><span class="pill ok">تم ✓</span></td>`;
+      }catch(err){
+        tot.fail++;
+        document.getElementById('a'+i).innerHTML=
+          `<td class="file" title="${f.name}">${f.name}</td><td>—</td><td>—</td><td><span class="pill bad" title="${err.message}">فشل ✕</span></td>`;
+      }
+    }
+    tb.insertAdjacentHTML('beforeend',
+      `<tr style="font-weight:800;background:#f8fafc"><td class="file">الإجمالي (${tot.ok} نجح / ${tot.fail} فشل)</td><td>${tot.rows}</td><td>—</td><td>—</td></tr>`);
+    assignGo.disabled=false; assignClear.disabled=false;
+    loadStatus();
+  });
 
   go.addEventListener('click', async ()=>{
     go.disabled=true; clearBtn.disabled=true; bar.classList.add('on');
@@ -174,11 +245,13 @@ UPLOAD_PAGE = """<!doctype html>
       let html=order.filter(([k])=>s[k]!=null).map(([k,lbl])=>
         `<div class="badge">${lbl}<b>${s[k]}</b></div>`).join('');
       html+=`<div class="badge" style="background:#eef2ff">رسائل مُرحّلة<b>${j.messages_injected||0}</b></div>`;
+      html+=`<div class="badge" style="background:#f0fdf4">أرقام توزيع<b>${(j.assignment_rules||{}).total||0}</b></div>`;
       statBadges.innerHTML=html||'<span class="muted">لسه مفيش بيانات.</span>';
     }catch(e){ statBadges.innerHTML='<span class="muted">تعذّر تحميل الحالة.</span>'; }
   }
   refresh.addEventListener('click', loadStatus);
   render();
+  renderAssign();
 </script>
 </body>
 </html>"""

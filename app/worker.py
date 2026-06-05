@@ -34,7 +34,13 @@ def run():
 
         cid, phone = contact["id"], contact["phone"]
         try:
-            status, count = migrate_user(phone, contact["user_ns"], contact["name"])
+            status, count, assignment_error = migrate_user(
+                phone,
+                contact["user_ns"],
+                contact["name"],
+                contact.get("assignment_salesperson"),
+                contact.get("assignment_assignee_id"),
+            )
         except Exception as e:
             db.requeue_contact(cid, error=f"unexpected: {e}")
             print(f"⚠️  {phone} unexpected error, requeued: {e}", flush=True)
@@ -48,9 +54,10 @@ def run():
             time.sleep(DOWN_BACKOFF)
             continue
 
-        db.finish_contact(cid, status, count)
+        db.finish_contact(cid, status, count, error=assignment_error)
         processed += 1
-        print(f"✅ [{processed}] {phone} -> {status} ({count} msgs)", flush=True)
+        note = f" / {assignment_error}" if assignment_error else ""
+        print(f"✅ [{processed}] {phone} -> {status} ({count} msgs){note}", flush=True)
 
         if processed % BREAK_EVERY == 0:
             print(f"🧘 Break {BREAK_SECONDS}s to protect the APIs...", flush=True)

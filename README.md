@@ -43,8 +43,28 @@ https://YOUR-WEB-URL.up.railway.app/
 الصفحة بترفع كل ملف ورا التاني وبتوريك جدول بالنتايج (جديد / مكرر / اتفلتر)،
 وفيه قسم "حالة الترحيل" بيتحدّث lحظيًا.
 
+### شيتات توزيع الموظفين (اختياري)
+
+لو عندك شيتات فيها أرقام العملاء واسم الموظف المسؤول، ارفعها من كارت **توزيع الأرقام على الموظفين**
+قبل رفع ملفات UChat. الشكل المتوقع:
+
+| Contact Name | Phone | Salesperson |
+|---|---|---|
+| Example Customer | 966500000000 | Nader Aziz |
+
+- لو رقم العميل موجود في شيت توزيع → المحادثة الجديدة في Chatwoot تتعمل assign للموظف.
+- لو الرقم مش موجود في شيت توزيع → المحادثة بتتساب **unassigned** حتى العميل يبعت رسالة.
+- لو أسماء `Salesperson` مش مطابقة لأسماء Agents في Chatwoot، حط mapping في env:
+
+```bash
+CHATWOOT_AGENT_MAP={"Ahmed  El-Shiekh":12,"Nader Aziz":13}
+```
+
+بديلًا عن ذلك، ممكن تضيف عمود `chatwoot_agent_id` أو `agent_id` في الشيت، وساعتها الكود يستخدم الـ ID مباشرة.
+
 ### بديل (اختياري) للـ CLI:
 ```bash
+curl -F "file=@assignments.xlsx" https://YOUR-WEB-URL.up.railway.app/upload-assignments
 curl -F "file=@users.csv" https://YOUR-WEB-URL.up.railway.app/upload
 curl https://YOUR-WEB-URL.up.railway.app/status
 ```
@@ -73,6 +93,7 @@ MIGRATE_SINCE=2025-11-01
 | `RATE_USER_DELAY` | 2 | تأخير بين كل عميل |
 | `DOWN_BACKOFF` | 30 | لو Chatwoot وقع، يستنى ويرجّع العميل للـ queue |
 | `BREAK_EVERY` / `BREAK_SECONDS` | 500 / 60 | استراحة دورية لحماية الـ APIs |
+| `CHATWOOT_AGENT_MAP` | empty | mapping اختياري من اسم الموظف في Excel إلى Chatwoot agent ID |
 
 ## ملاحظة أمان
 

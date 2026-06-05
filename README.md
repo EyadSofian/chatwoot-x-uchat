@@ -94,6 +94,21 @@ MIGRATE_SINCE=2025-11-01
 | `DOWN_BACKOFF` | 30 | لو Chatwoot وقع، يستنى ويرجّع العميل للـ queue |
 | `BREAK_EVERY` / `BREAK_SECONDS` | 500 / 60 | استراحة دورية لحماية الـ APIs |
 | `CHATWOOT_AGENT_MAP` | empty | mapping اختياري من اسم الموظف في Excel إلى Chatwoot agent ID |
+| `UCHAT_INCLUDE_BOT` | 1 | يجيب رسائل البوت/البرودكاست من UChat بدل ما تظهر المحادثة empty |
+| `UCHAT_INCLUDE_NOTE` | 1 | يجيب notes من UChat لو موجودة |
+| `UCHAT_INCLUDE_SYSTEM` | 0 | يجيب system messages من UChat لو محتاجها |
+| `UCHAT_MSG_LIMIT` | 100 | أقصى عدد رسائل يرجعها UChat لكل عميل |
+
+## لو عملت تشغيل قبل تفعيل رسائل UChat
+
+لو worker كان شغال وعلّم contacts كتير `empty` بسبب إن UChat كان بيرجع من غير bot messages،
+بعد redeploy شغّل query دي على Railway Postgres عشان يرجعهم للـ queue:
+
+```sql
+UPDATE contacts
+SET status='pending', messages_count=0, error=NULL, processed_at=NULL
+WHERE status='empty';
+```
 
 ## ملاحظة أمان
 

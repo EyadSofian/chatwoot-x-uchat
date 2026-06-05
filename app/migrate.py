@@ -20,6 +20,10 @@ INBOX_ID = int(os.environ["INBOX_ID"])
 # Pacing (seconds) — tune from env without redeploying code.
 RATE_MSG_DELAY = float(os.environ.get("RATE_MSG_DELAY", "0.5"))
 CHATWOOT_AGENT_MAP_RAW = os.environ.get("CHATWOOT_AGENT_MAP", "").strip()
+UCHAT_INCLUDE_BOT = int(os.environ.get("UCHAT_INCLUDE_BOT", "1"))
+UCHAT_INCLUDE_NOTE = int(os.environ.get("UCHAT_INCLUDE_NOTE", "1"))
+UCHAT_INCLUDE_SYSTEM = int(os.environ.get("UCHAT_INCLUDE_SYSTEM", "0"))
+UCHAT_MSG_LIMIT = int(os.environ.get("UCHAT_MSG_LIMIT", "100"))
 
 _CW_HEADERS = {"api_access_token": CHATWOOT_API_TOKEN, "Content-Type": "application/json"}
 _AGENTS_CACHE: list[dict] | None = None
@@ -68,15 +72,42 @@ _STATIC_AGENT_MAP = _load_agent_map()
 def fetch_uchat_messages(phone: str, user_ns: str, retries: int = 3) -> list:
     url = "https://www.uchat.com.au/api/subscriber/chat-messages"
     headers = {"Authorization": f"Bearer {UCHAT_API_TOKEN}", "Accept": "application/json"}
-    params = {"user_ns": user_ns} if user_ns else {"user_id": phone.replace("+", "")}
-    for _ in range(retries):
-        try:
-            r = requests.get(url, headers=headers, params=params, timeout=30)
-            return r.json().get("data", []) if r.status_code == 200 else []
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-            time.sleep(3)
-        except Exception:
-            return []
+    base_params = {
+        "include_bot": UCHAT_INCLUDE_BOT,
+        "include_note": UCHAT_INCLUDE_NOTE,
+        "include_system": UCHAT_INCLUDE_SYSTEM,
+        "limit": UCHAT_MSG_LIMIT,
+    }
+    lookup_params = []
+    if user_ns:
+        lookup_params.append({"user_ns": user_ns})
+    lookup_params.append({"user_id": phone.replace("+", "")})
+
+    last_error = None
+    for lookup in lookup_params:
+        params = {**base_params, **lookup}
+        for _ in range(retries):
+            try:
+                r = requests.get(url, headers=headers, params=params, timeout=30)
+                if r.status_code == 200:
+                    data = r.json().get("data", [])
+                    if isinstance(data, dict):
+                        data = data.get("messages") or data.get("items") or data.get("data") or []
+                    if data:
+                        return data
+                    last_error = f"empty via {lookup}"
+                    break
+                last_error = f"http_{r.status_code}: {r.text[:180]}"
+                if r.status_code in (400, 404):
+                    break
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_error = f"network: {e}"
+                time.sleep(3)
+            except Exception as e:
+                last_error = f"unexpected: {e}"
+                break
+    if last_error:
+        print(f"UChat returned no messages for {phone}: {last_error}", flush=True)
     return []
 
 
